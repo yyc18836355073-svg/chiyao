@@ -79,6 +79,27 @@ export default {
         });
       }
 
+      // 接收 SW 推送事件诊断日志（设备端上报）
+      if (url.pathname === '/api/diag' && request.method === 'POST') {
+        const body = await request.json();
+        const key = 'diag:' + Date.now();
+        await env.PUSH_KV.put(key, JSON.stringify({ ...body, serverTs: Date.now() }));
+        return new Response(JSON.stringify({ ok: true }), { headers: cors });
+      }
+
+      // 读取诊断日志
+      if (url.pathname === '/api/diag' && request.method === 'GET') {
+        const list = await env.PUSH_KV.list({ prefix: 'diag:', limit: 50 });
+        const logs = [];
+        for (const k of list.keys) {
+          logs.push(JSON.parse((await env.PUSH_KV.get(k.name)) || '{}'));
+        }
+        logs.sort((a, b) => (a.serverTs || 0) - (b.serverTs || 0));
+        return new Response(JSON.stringify({ ok: true, logs }), {
+          headers: { 'Content-Type': 'application/json', ...cors },
+        });
+      }
+
       // 手动测试推送（诊断用）
       if (url.pathname === '/api/test-push' && request.method === 'POST') {
         const body = await request.json();

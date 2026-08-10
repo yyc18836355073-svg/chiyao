@@ -1,4 +1,5 @@
-const CACHE_NAME = 'hp-pwa-v1.1.0';
+const CACHE_NAME = 'hp-pwa-v1.2.0';
+const DIAG_URL = 'https://hp-push-worker.hp-push.workers.dev/api/diag';
 
 const PRECACHE_ASSETS = [
   './',
@@ -27,13 +28,33 @@ self.addEventListener('activate', (event) => {
           }
         })
       );
-    })
+    }).then(() => self.clients.claim()).then(() => reportDiag('activated'))
   );
   self.clients.claim();
 });
 
 // ===== Web Push 通知处理 =====
+
+async function reportDiag(evt) {
+  try {
+    let permission = 'unknown';
+    try { permission = Notification.permission; } catch (e) {}
+    await fetch(DIAG_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        evt,
+        swTs: Date.now(),
+        swVersion: CACHE_NAME,
+        permission,
+        ua: navigator.userAgent,
+      }),
+    });
+  } catch (e) {}
+}
+
 self.addEventListener('push', (event) => {
+  reportDiag('push-received');
   let data = { title: 'HP服药打卡', body: '该吃药了！', tag: 'hp-reminder' };
   try {
     if (event.data) {
@@ -53,7 +74,11 @@ self.addEventListener('push', (event) => {
     data: { url: './' }
   };
 
-  event.waitUntil(self.registration.showNotification(data.title, options));
+  event.waitUntil(
+    self.registration.showNotification(data.title, options)
+      .then(() => reportDiag('shown'))
+      .catch((e) => reportDiag('show-error:' + e.message))
+  );
 });
 
 self.addEventListener('notificationclick', (event) => {

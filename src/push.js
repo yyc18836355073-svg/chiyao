@@ -36,7 +36,7 @@ async function ensureServiceWorker() {
   // 确保 SW 注册成功并处于激活状态，避免 serviceWorker.ready 永不 resolve
   if (!navigator.serviceWorker.controller) {
     try {
-      const reg = await withTimeout(navigator.serviceWorker.register('./sw.js'), 8000, 'SW注册');
+      const reg = await withTimeout(navigator.serviceWorker.register('/chiyao/sw.js'), 8000, 'SW注册');
       if (reg.waiting || reg.installing) {
         await withTimeout(new Promise((resolve) => {
           const onState = () => {
