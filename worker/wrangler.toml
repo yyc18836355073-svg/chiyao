@@ -1,0 +1,18 @@
+name = "hp-push-worker"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# 每分钟执行一次检查
+[triggers]
+crons = ["* * * * *"]
+
+# VAPID 公钥/私钥通过环境变量注入：
+# wrangler secret put VAPID_PRIVATE_KEY
+# wrangler secret put PUSH_SUBJECT
+[vars]
+VAPID_PUBLIC_KEY = "BKuyFvgYG2vBZoWnYDozuNuMn3Lu121H6GGk5FvRoKugDptYA4Qycx1ERuZ4QzTlJL_HPliPTQWQzMI536agCxc"
+PUSH_SUBJECT = "mailto:yyc18836355073-svg@users.noreply.github.com"
+
+[[kv_namespaces]]
+binding = "PUSH_KV"
+id = "801504a6032149c7a12762055fc0069e"

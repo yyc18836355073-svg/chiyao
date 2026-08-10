@@ -1,4 +1,5 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
+import { enablePush, scheduleReminder, cancelReminders } from './push.js';
 
 // 本地存储 KEY 定义
 const STORAGE_KEYS = {
@@ -160,11 +161,10 @@ export default function App() {
   };
 
   const requestNotification = () => {
-    if ('Notification' in window) {
-      Notification.requestPermission().then((permission) => {
-        setNotificationGranted(permission === 'granted');
-      });
-    }
+    enablePush().then((res) => {
+      setNotificationGranted(res.ok && Notification.permission === 'granted');
+      if (!res.ok && res.error) alert('开启推送失败：' + res.error);
+    });
   };
 
   // 监听倒计时结束
@@ -194,6 +194,27 @@ export default function App() {
       }
     }
   }, [nowTs, activeTimer]);
+
+  // 启动倒计时时，把提醒计划上报给推送服务（后台到点也会推送）
+  useEffect(() => {
+    if (!activeTimer) return;
+
+    let title = '';
+    let body = '';
+    if (activeTimer.stage === 'PRE_MEAL') {
+      title = '🍚 30分钟倒计时结束：请开始用餐！';
+      body = '抑酸药与胃粘膜保护膜已到位，请正常用餐。吃完饭后请开启抗生素倒计时。';
+    } else if (activeTimer.stage === 'POST_MEAL') {
+      title = '💊 饭后15分钟到：该吃抗生素了！';
+      body = '请及时服用抗生素。饭后服用可降低胃部刺激。';
+    }
+    if (!title) return;
+
+    scheduleReminder({ at: activeTimer.targetTs, title, body });
+    return () => {
+      cancelReminders();
+    };
+  }, [activeTimer]);
 
   // 10 小时防呆锁定判定
   const getSafetyLockInfo = () => {
