@@ -79,6 +79,31 @@ export default {
         });
       }
 
+      // 手动测试推送（诊断用）
+      if (url.pathname === '/api/test-push' && request.method === 'POST') {
+        const body = await request.json();
+        const subs = await getSubscriptions(env);
+        const targets = body.clientId
+          ? subs.filter((s) => s.clientId === body.clientId)
+          : subs;
+        if (targets.length === 0) {
+          return new Response(JSON.stringify({ ok: false, error: '无订阅' }), { headers: cors });
+        }
+        const results = [];
+        for (const t of targets) {
+          try {
+            const payload = JSON.stringify({ title: '测试推送', body: '如果收到说明推送链路正常', tag: 'hp-reminder' });
+            const r = await sendPush(env, t.subscription, payload);
+            results.push({ endpoint: t.subscription.endpoint.slice(0, 60), success: r });
+          } catch (e) {
+            results.push({ endpoint: t.subscription.endpoint.slice(0, 60), success: false, error: e.message });
+          }
+        }
+        return new Response(JSON.stringify({ ok: true, results }), {
+          headers: { 'Content-Type': 'application/json', ...cors },
+        });
+      }
+
       return new Response('Not Found', { status: 404, headers: cors });
     } catch (e) {
       return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500, headers: cors });
@@ -95,20 +120,26 @@ export default {
 
     const subs = await getSubscriptions(env);
     let pushed = 0;
+    let failed = 0;
+    // 仅成功推送的提醒才会被移除
+    const successIds = new Set();
 
     for (const reminder of due) {
       const targets = subs.filter((s) => s.clientId === reminder.clientId || reminder.clientId === 'all');
+      console.log(`[scheduled] 处理 ${reminder.id}: due=${due.length} subs=${subs.length} targets=${targets.length}`);
       // 若该设备在 5 分钟前才刚提醒过，跳过（防重复）
       const lastKey = `lastpush:${reminder.clientId}`;
       const lastTs = Number((await env.PUSH_KV.get(lastKey)) || 0);
       if (now - lastTs < 5 * 60 * 1000) continue;
 
+      let ok = false;
       for (const t of targets) {
         try {
           const payload = JSON.stringify({ title: reminder.title, body: reminder.body, tag: 'hp-reminder' });
           const result = await sendPush(env, t.subscription, payload);
-          if (result) pushed++;
+          if (result) ok = true;
         } catch (e) {
+          failed++;
           console.error(`推送失败 ${t.subscription.endpoint}:`, e.message);
           // 410 Gone = 订阅失效，删除
           if (String(e.message).includes('410')) {
@@ -117,12 +148,17 @@ export default {
           }
         }
       }
-      await env.PUSH_KV.put(lastKey, String(now));
+      if (ok) {
+        successIds.add(reminder.id);
+        await env.PUSH_KV.put(lastKey, String(now));
+      }
     }
 
-    const rest = reminders.filter((r) => r.at > now);
+    // 写回前重新读取最新快照，避免覆盖处理期间并发新增的提醒
+    const latest = await getReminders(env);
+    const rest = latest.filter((r) => !successIds.has(r.id));
     await env.PUSH_KV.put('reminders', JSON.stringify(rest));
-    console.log(`[scheduled] 到期 ${due.length} 条，推送 ${pushed} 次，剩余 ${rest.length} 条`);
+    console.log(`[scheduled] 到期 ${due.length} 条，推送成功 ${successIds.size}，失败 ${failed}，剩余 ${rest.length} 条`);
   },
 };
 
@@ -149,7 +185,7 @@ async function sendPush(env, subscription, payload) {
   );
 
   const body = await buildEncryptedBody(salt, localPublicKey, key, nonce, payload);
-  const jwt = await signJwt(env.VAPID_PRIVATE_KEY, endpoint.origin, env.PUSH_SUBJECT);
+  const jwt = await signJwt(env.VAPID_PRIVATE_KEY, env.VAPID_PUBLIC_KEY, endpoint.origin, env.PUSH_SUBJECT);
 
   const resp = await fetch(subscription.endpoint, {
     method: 'POST',
@@ -158,13 +194,16 @@ async function sendPush(env, subscription, payload) {
       'Content-Encoding': 'aes128gcm',
       'TTL': '300',
       'Urgency': 'high',
+      'Topic': 'hp-quad-therapy',
       'Authorization': `vapid t=${jwt}, k=${env.VAPID_PUBLIC_KEY}`,
     },
     body,
   });
 
   if (resp.status >= 400) {
-    const err = new Error(`推送返回 ${resp.status}`);
+    let detail = '';
+    try { detail = await resp.text(); } catch (e) {}
+    const err = new Error(`推送返回 ${resp.status}: ${detail}`);
     if (resp.status === 410 || resp.status === 404) err.message = '410';
     throw err;
   }
@@ -245,7 +284,7 @@ async function hkdf(secret, info, length = 32) {
   return new Uint8Array(bits);
 }
 
-async function signJwt(privateKeyB64, audience, subject) {
+async function signJwt(privateKeyB64, publicKeyB64, audience, subject) {
   const header = { typ: 'JWT', alg: 'ES256' };
   const now = Math.floor(Date.now() / 1000);
   const payload = {
@@ -257,9 +296,19 @@ async function signJwt(privateKeyB64, audience, subject) {
   const enc = (o) => base64UrlEncode(utf8(JSON.stringify(o)));
   const unsignedToken = `${enc(header)}.${enc(payload)}`;
 
+  // 用 JWK 导入（避免手写 PKCS8 DER 出错）
+  const pubRaw = base64UrlToBuffer(publicKeyB64); // 65 字节: 04 || X || Y
+  const jwk = {
+    kty: 'EC',
+    crv: 'P-256',
+    x: base64UrlEncode(pubRaw.slice(1, 33)),
+    y: base64UrlEncode(pubRaw.slice(33, 65)),
+    d: base64UrlEncode(base64UrlToBuffer(privateKeyB64)),
+  };
+
   const key = await crypto.subtle.importKey(
-    'pkcs8',
-    pkcs8ToArrayBuffer(privateKeyB64),
+    'jwk',
+    jwk,
     { name: 'ECDSA', namedCurve: 'P-256' },
     false,
     ['sign']
@@ -275,43 +324,22 @@ async function signJwt(privateKeyB64, audience, subject) {
   return `${unsignedToken}.${base64UrlEncode(sig)}`;
 }
 
-// 将 base64url 的 P-256 私钥（32字节）包装为 PKCS8 DER
-function pkcs8ToArrayBuffer(b64) {
-  const raw = base64UrlToBuffer(b64);
-  // PKCS8 header for EC P-256
-  const prefix = new Uint8Array([
-    0x30, 0x81, 0x87, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce,
-    0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04,
-    0x6d, 0x30, 0x6b, 0x02, 0x01, 0x01, 0x04, 0x20,
-  ]);
-  // 参数部分 + 公钥部分
-  const pubSuffix = new Uint8Array([
-    0xa1, 0x44, 0x03, 0x42, 0x00, 0x04,
-  ]);
-  const keyWithPrefix = new Uint8Array(prefix.length + raw.length);
-  keyWithPrefix.set(prefix, 0);
-  keyWithPrefix.set(raw, prefix.length);
-
-  // 由于我们只需要私钥 d，用 0x81, 0x84 固定长度的替代方案：
-  // 简单方案：手动构造 0x30 0x81 0x87 ... 已在上方给出，len = 0x87
-  const out = keyWithPrefix;
-  return out.buffer;
-}
-
-// DER ECDSA 签名 -> RFC 7515 (r || s 各 32 字节)
-function derToRfc7515(der) {
-  const rLen = der[3];
+// ECDSA 签名转 RFC 7515 (r || s 各 32 字节)
+// 兼容两种输出格式：DER (30...) 或 raw (r||s)
+function derToRfc7515(sig) {
+  // raw 格式（64字节 r||s）直接返回
+  if (sig.length === 64 && sig[0] !== 0x30) {
+    return sig;
+  }
+  // DER 格式解析
+  const rLen = sig[3];
   const rStart = 4;
-  let r = der.slice(rStart, rStart + rLen);
-  const sLen = der[rStart + rLen + 1];
+  let r = trimLeadingZeros(sig.slice(rStart, rStart + rLen));
+  const sLen = sig[rStart + rLen + 1];
   const sStart = rStart + rLen + 2;
-  let s = der.slice(sStart, sStart + sLen);
-
-  r = trimLeadingZeros(r);
-  s = trimLeadingZeros(s);
+  let s = trimLeadingZeros(sig.slice(sStart, sStart + sLen));
   if (r.length < 32) r = padLeft(r, 32);
   if (s.length < 32) s = padLeft(s, 32);
-
   return concat(r, s);
 }
 
