@@ -32,6 +32,19 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+async function fetchWithRetry(url, { retries = 2, ms = 8000 } = {}) {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fetch(url);
+    } catch (e) {
+      lastErr = e;
+      if (i < retries) await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 async function ensureServiceWorker() {
   // 确保 SW 注册成功并处于激活状态，避免 serviceWorker.ready 永不 resolve
   if (!navigator.serviceWorker.controller) {
@@ -83,7 +96,7 @@ export async function enablePush() {
     const reg = await ensureServiceWorker();
     step('sw', !!reg.active);
 
-    const keyResp = await withTimeout(fetch(WORKER_BASE + '/api/public-key'), 8000, '获取公钥');
+    const keyResp = await withTimeout(fetchWithRetry(WORKER_BASE + '/api/public-key', { retries: 2, ms: 8000 }), 26000, '获取公钥');
     const { publicKey } = await keyResp.json();
     step('publicKey', !!publicKey);
     if (!publicKey) return { ok: false, error: '获取推送公钥失败', steps };
@@ -124,6 +137,24 @@ export async function scheduleReminder({ at, title, body }) {
 // 取消该设备所有待办提醒（打卡完成/重置时）
 export async function cancelReminders() {
   return api('/api/reminder?clientId=' + encodeURIComponent(getClientId()), { method: 'DELETE' });
+}
+
+// 保存每日定时提醒（早/晚时间，HH:mm 格式，可随时修改）
+export async function saveDailySchedule({ morning, evening }) {
+  return api('/api/daily', {
+    method: 'POST',
+    body: JSON.stringify({
+      clientId: getClientId(),
+      morning: morning || null,
+      evening: evening || null,
+      tzOffset: -new Date().getTimezoneOffset(),
+    }),
+  });
+}
+
+// 取消每日定时提醒
+export async function cancelDailySchedule() {
+  return api('/api/daily?clientId=' + encodeURIComponent(getClientId()), { method: 'DELETE' });
 }
 
 function urlBase64ToUint8Array(base64String) {

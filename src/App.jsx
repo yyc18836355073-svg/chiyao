@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
-import { enablePush, scheduleReminder, cancelReminders } from './push.js';
+import { enablePush, scheduleReminder, cancelReminders, saveDailySchedule, cancelDailySchedule } from './push.js';
 
 // 本地存储 KEY 定义
 const STORAGE_KEYS = {
@@ -7,6 +7,7 @@ const STORAGE_KEYS = {
   LOGS: 'hp_logs_v1',
   LAST_MORNING: 'hp_last_morning_ts',
   ACTIVE_TIMER: 'hp_active_timer_v1',
+  DAILY_SCHEDULE: 'hp_daily_schedule',
 };
 
 // 默认 14 天结构初始化
@@ -48,6 +49,12 @@ export default function App() {
     const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_TIMER);
     return saved ? JSON.parse(saved) : null;
   });
+
+  const [dailySchedule, setDailySchedule] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.DAILY_SCHEDULE);
+    return saved ? JSON.parse(saved) : { morning: '08:00', evening: '20:00' };
+  });
+  const [dailySaved, setDailySaved] = useState(null); // null | 'saving' | 'saved' | 'error'
 
   const [currentPeriod, setCurrentPeriod] = useState('morning');
   const [nowTs, setNowTs] = useState(Date.now());
@@ -101,6 +108,10 @@ export default function App() {
       localStorage.removeItem(STORAGE_KEYS.ACTIVE_TIMER);
     }
   }, [activeTimer]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.DAILY_SCHEDULE, JSON.stringify(dailySchedule));
+  }, [dailySchedule]);
 
   const calculateCurrentDayNum = () => {
     const start = new Date(startDate + 'T00:00:00');
@@ -173,6 +184,25 @@ export default function App() {
         alert('推送已开启！\n诊断: ' + (res.steps || []).join(' | '));
       }
     });
+  };
+
+  const handleSaveDaily = async () => {
+    if (!dailySchedule.morning && !dailySchedule.evening) {
+      alert('请至少设置一个提醒时间');
+      return;
+    }
+    setDailySaved('saving');
+    const res = await saveDailySchedule(dailySchedule);
+    setDailySaved(res.ok ? 'saved' : 'error');
+    if (!res.ok) alert('保存失败：' + (res.error || '网络错误，请确认VPN规则已包含 workers.dev'));
+  };
+
+  const handleCancelDaily = async () => {
+    if (!window.confirm('确定关闭每日定时提醒吗？')) return;
+    setDailySaved('saving');
+    const res = await cancelDailySchedule();
+    setDailySaved(res.ok ? 'saved' : 'error');
+    if (!res.ok) alert('取消失败：' + (res.error || '网络错误'));
   };
 
   // 监听倒计时结束
@@ -710,6 +740,62 @@ export default function App() {
                 onChange={(e) => setStartDate(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-slate-100 font-mono"
               />
+            </div>
+
+            <div className="bg-slate-900/80 p-3 rounded-2xl border border-slate-700/80 text-left space-y-2.5">
+              <div className="flex items-center justify-between">
+                <p className="font-bold text-sky-300 text-xs">⏰ 每日定时吃药提醒</p>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                  dailySaved === 'saved' ? 'bg-emerald-500/20 text-emerald-300'
+                  : dailySaved === 'error' ? 'bg-rose-500/20 text-rose-300'
+                  : dailySaved === 'saving' ? 'bg-sky-500/20 text-sky-300'
+                  : 'bg-slate-700/60 text-slate-400'
+                }`}>
+                  {dailySaved === 'saved' ? '✓ 已保存' : dailySaved === 'error' ? '保存失败' : dailySaved === 'saving' ? '保存中…' : '随时可修改'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 flex-1">
+                  <span className="text-slate-300">🌅 早餐提醒</span>
+                  <input
+                    type="time"
+                    value={dailySchedule.morning || ''}
+                    onChange={(e) => setDailySchedule(prev => ({ ...prev, morning: e.target.value }))}
+                    className="flex-1 bg-slate-800 border border-slate-600 rounded-lg p-1.5 text-slate-100 font-mono text-center"
+                  />
+                </div>
+                <div className="flex items-center gap-2 flex-1">
+                  <span className="text-slate-300">🌙 晚餐提醒</span>
+                  <input
+                    type="time"
+                    value={dailySchedule.evening || ''}
+                    onChange={(e) => setDailySchedule(prev => ({ ...prev, evening: e.target.value }))}
+                    className="flex-1 bg-slate-800 border border-slate-600 rounded-lg p-1.5 text-slate-100 font-mono text-center"
+                  />
+                </div>
+              </div>
+
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                到点自动推送通知提醒服药（需已开启推送）。留空表示关闭该时段提醒。
+              </p>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={handleSaveDaily}
+                  disabled={dailySaved === 'saving'}
+                  className="flex-1 py-2 bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-bold rounded-xl"
+                >
+                  保存提醒时间
+                </button>
+                <button
+                  onClick={handleCancelDaily}
+                  disabled={dailySaved === 'saving'}
+                  className="px-3 py-2 bg-rose-950/60 hover:bg-rose-900 disabled:opacity-50 text-rose-300 border border-rose-700/40 text-xs font-bold rounded-xl"
+                >
+                  关闭
+                </button>
+              </div>
             </div>
 
             <div className="bg-slate-900/80 p-3 rounded-2xl border border-slate-700/80 text-left text-xs space-y-2 text-slate-300 leading-relaxed">

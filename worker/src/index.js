@@ -73,6 +73,36 @@ export default {
       }
 
       // 健康检查
+      // 保存/更新每日定时提醒（早/晚饭时间，可随时修改）
+      if (url.pathname === '/api/daily' && request.method === 'POST') {
+        const body = await request.json();
+        const { clientId, morning, evening, tzOffset } = body;
+        if (!clientId) {
+          return new Response(JSON.stringify({ ok: false, error: '缺少参数' }), { status: 400, headers: cors });
+        }
+        const clean = (t) => (typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t)) ? t : null;
+        const settings = await getDailySettings(env);
+        const rest = settings.filter((s) => s.clientId !== clientId);
+        rest.push({
+          clientId,
+          morning: clean(morning),
+          evening: clean(evening),
+          tzOffset: Number.isFinite(Number(tzOffset)) ? Number(tzOffset) : -new Date().getTimezoneOffset(),
+          updatedAt: Date.now(),
+        });
+        await env.PUSH_KV.put('dailySettings', JSON.stringify(rest));
+        return new Response(JSON.stringify({ ok: true, count: rest.length }), { headers: cors });
+      }
+
+      // 取消该设备的每日定时提醒
+      if (url.pathname === '/api/daily' && request.method === 'DELETE') {
+        const clientId = url.searchParams.get('clientId');
+        const settings = await getDailySettings(env);
+        const rest = settings.filter((s) => s.clientId !== clientId);
+        await env.PUSH_KV.put('dailySettings', JSON.stringify(rest));
+        return new Response(JSON.stringify({ ok: true }), { headers: cors });
+      }
+
       if (url.pathname === '/api/health') {
         return new Response(JSON.stringify({ ok: true, reminders: (await getReminders(env)).length, subs: (await getSubscriptions(env)).length }), {
           headers: { 'Content-Type': 'application/json', ...cors },
@@ -114,8 +144,8 @@ export default {
         for (const t of targets) {
           try {
             const payload = JSON.stringify({ title: '测试推送', body: '如果收到说明推送链路正常', tag: 'hp-reminder' });
-            const r = await sendPush(env, t.subscription, payload);
-            results.push({ endpoint: t.subscription.endpoint.slice(0, 60), success: r });
+            const detail = await sendPush(env, t.subscription, payload);
+            results.push({ endpoint: t.subscription.endpoint.slice(0, 60), success: detail.ok, status: detail.status, headers: detail.headers });
           } catch (e) {
             results.push({ endpoint: t.subscription.endpoint.slice(0, 60), success: false, error: e.message });
           }
@@ -134,52 +164,98 @@ export default {
   // 每分钟定时检查到期提醒
   async scheduled(event, env, ctx) {
     const now = Date.now();
-    const reminders = await getReminders(env);
-    const due = reminders.filter((r) => r.at <= now);
-
-    if (due.length === 0) return;
-
     const subs = await getSubscriptions(env);
     let pushed = 0;
     let failed = 0;
-    // 仅成功推送的提醒才会被移除
     const successIds = new Set();
 
-    for (const reminder of due) {
-      const targets = subs.filter((s) => s.clientId === reminder.clientId || reminder.clientId === 'all');
-      console.log(`[scheduled] 处理 ${reminder.id}: due=${due.length} subs=${subs.length} targets=${targets.length}`);
-      // 若该设备在 5 分钟前才刚提醒过，跳过（防重复）
-      const lastKey = `lastpush:${reminder.clientId}`;
-      const lastTs = Number((await env.PUSH_KV.get(lastKey)) || 0);
-      if (now - lastTs < 5 * 60 * 1000) continue;
+    // ===== 每日定时提醒（早/晚固定时间）=====
+    const dailySettings = await getDailySettings(env);
+    for (const s of dailySettings) {
+      const tzOffset = Number(s.tzOffset) || 480;
+      const localMs = now + tzOffset * 60000;
+      const d = new Date(localMs);
+      const pad = (n) => String(n).padStart(2, '0');
+      const hhmm = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+      const localDate = d.toISOString().slice(0, 10);
 
-      let ok = false;
-      for (const t of targets) {
-        try {
-          const payload = JSON.stringify({ title: reminder.title, body: reminder.body, tag: 'hp-reminder' });
-          const result = await sendPush(env, t.subscription, payload);
-          if (result) ok = true;
-        } catch (e) {
-          failed++;
-          console.error(`推送失败 ${t.subscription.endpoint}:`, e.message);
-          // 410 Gone = 订阅失效，删除
-          if (String(e.message).includes('410')) {
-            const rest = subs.filter((s) => s.endpoint !== t.subscription.endpoint);
-            await env.PUSH_KV.put('subscriptions', JSON.stringify(rest));
+      for (const period of ['morning', 'evening']) {
+        const time = s[period];
+        if (!time || time !== hhmm) continue;
+        const pushedKey = `dailyPushed:${s.clientId}:${localDate}:${period}`;
+        if (await env.PUSH_KV.get(pushedKey)) continue;
+
+        const targets = subs.filter((t) => t.clientId === s.clientId);
+        let ok = false;
+        for (const t of targets) {
+          try {
+            const payload = JSON.stringify({
+              title: period === 'morning' ? '🌅 该吃早餐药了！' : '🌙 该吃晚餐药了！',
+              body: period === 'morning'
+                ? '饭前30分钟：PPI抑酸剂+铋剂。请开启30分钟倒计时，饭后记得服抗生素。'
+                : '饭前30分钟：PPI抑酸剂+铋剂。请开启30分钟倒计时，饭后记得服抗生素。',
+              tag: `hp-daily-${period}`,
+            });
+            const result = await sendPush(env, t.subscription, payload);
+            if (result) ok = true;
+          } catch (e) {
+            failed++;
+            console.error(`每日提醒推送失败 ${t.subscription.endpoint}:`, e.message);
+            if (String(e.message).includes('410')) {
+              const rest = subs.filter((x) => x.endpoint !== t.subscription.endpoint);
+              await env.PUSH_KV.put('subscriptions', JSON.stringify(rest));
+            }
           }
         }
-      }
-      if (ok) {
-        successIds.add(reminder.id);
-        await env.PUSH_KV.put(lastKey, String(now));
+        if (ok) {
+          await env.PUSH_KV.put(pushedKey, String(now));
+          pushed++;
+          console.log(`[scheduled] 每日提醒 ${s.clientId} ${period}@${time} 推送成功`);
+        }
       }
     }
 
-    // 写回前重新读取最新快照，避免覆盖处理期间并发新增的提醒
-    const latest = await getReminders(env);
-    const rest = latest.filter((r) => !successIds.has(r.id));
-    await env.PUSH_KV.put('reminders', JSON.stringify(rest));
-    console.log(`[scheduled] 到期 ${due.length} 条，推送成功 ${successIds.size}，失败 ${failed}，剩余 ${rest.length} 条`);
+    // ===== 一次性到期提醒 =====
+    const reminders = await getReminders(env);
+    const due = reminders.filter((r) => r.at <= now);
+
+    if (due.length > 0) {
+      for (const reminder of due) {
+        const targets = subs.filter((s) => s.clientId === reminder.clientId || reminder.clientId === 'all');
+        console.log(`[scheduled] 处理 ${reminder.id}: due=${due.length} subs=${subs.length} targets=${targets.length}`);
+        // 若该设备在 5 分钟前才刚提醒过，跳过（防重复）
+        const lastKey = `lastpush:${reminder.clientId}`;
+        const lastTs = Number((await env.PUSH_KV.get(lastKey)) || 0);
+        if (now - lastTs < 5 * 60 * 1000) continue;
+
+        let ok = false;
+        for (const t of targets) {
+          try {
+            const payload = JSON.stringify({ title: reminder.title, body: reminder.body, tag: 'hp-reminder' });
+            const result = await sendPush(env, t.subscription, payload);
+            if (result) ok = true;
+          } catch (e) {
+            failed++;
+            console.error(`推送失败 ${t.subscription.endpoint}:`, e.message);
+            // 410 Gone = 订阅失效，删除
+            if (String(e.message).includes('410')) {
+              const rest = subs.filter((s) => s.endpoint !== t.subscription.endpoint);
+              await env.PUSH_KV.put('subscriptions', JSON.stringify(rest));
+            }
+          }
+        }
+        if (ok) {
+          successIds.add(reminder.id);
+          await env.PUSH_KV.put(lastKey, String(now));
+        }
+      }
+
+      // 写回前重新读取最新快照，避免覆盖处理期间并发新增的提醒
+      const latest = await getReminders(env);
+      const rest = latest.filter((r) => !successIds.has(r.id));
+      await env.PUSH_KV.put('reminders', JSON.stringify(rest));
+      console.log(`[scheduled] 到期 ${due.length} 条，推送成功 ${successIds.size}，失败 ${failed}，剩余 ${rest.length} 条`);
+    }
   },
 };
 
@@ -190,6 +266,11 @@ async function getSubscriptions(env) {
 
 async function getReminders(env) {
   const raw = await env.PUSH_KV.get('reminders');
+  return raw ? JSON.parse(raw) : [];
+}
+
+async function getDailySettings(env) {
+  const raw = await env.PUSH_KV.get('dailySettings');
   return raw ? JSON.parse(raw) : [];
 }
 
@@ -213,7 +294,7 @@ async function sendPush(env, subscription, payload) {
     headers: {
       'Content-Type': 'application/octet-stream',
       'Content-Encoding': 'aes128gcm',
-      'TTL': '300',
+      'TTL': '86400',
       'Urgency': 'high',
       'Topic': 'hp-quad-therapy',
       'Authorization': `vapid t=${jwt}, k=${env.VAPID_PUBLIC_KEY}`,
@@ -228,7 +309,9 @@ async function sendPush(env, subscription, payload) {
     if (resp.status === 410 || resp.status === 404) err.message = '410';
     throw err;
   }
-  return resp.ok;
+  const headers = {};
+  for (const [k, v] of resp.headers) headers[k] = v;
+  return { ok: resp.ok, status: resp.status, headers };
 }
 
 async function encryptSetup(clientPublicKey, authSecret) {
@@ -247,18 +330,15 @@ async function encryptSetup(clientPublicKey, authSecret) {
     256
   );
 
-  // HKDF: PRK = HMAC(auth_info, ecdh_secret)
-  const authInfo = concat(utf8('Content-Encoding: auth'), new Uint8Array([0]), authSecret);
-  const prk = await hkdf(new Uint8Array(shared), authInfo);
-
-  // IKM = HKDF(PRK, info = "WebPush: info" || ua_public || as_public, 32)
+  // IKM = HKDF(salt=auth_secret, IKM=ecdh_secret, info="WebPush: info" || ua_public || as_public, 32)
+  // 与 http_ece / iOS 兼容实现完全一致
   const info = concat(utf8('WebPush: info'), new Uint8Array([0]), clientPublicKey, localPublicKey);
-  const ikm = await hkdf(prk, info, 32);
+  const ikm = await hkdf(new Uint8Array(shared), info, 32, authSecret);
 
-  // key = HKDF(IKM, salt, "Content-Encoding: aes128gcm\0", 16)
-  const key = await hkdf(ikm, concat(utf8('Content-Encoding: aes128gcm'), new Uint8Array([0]), salt), 16);
-  // nonce = HKDF(IKM, salt, "Content-Encoding: nonce\0", 12)
-  const nonce = await hkdf(ikm, concat(utf8('Content-Encoding: nonce'), new Uint8Array([0]), salt), 12);
+  // key = HKDF-Expand(Extract(salt), "Content-Encoding: aes128gcm\0", 16)
+  const key = await hkdf(ikm, utf8('Content-Encoding: aes128gcm\0'), 16, salt);
+  // nonce = HKDF-Expand(Extract(salt), "Content-Encoding: nonce\0", 12)
+  const nonce = await hkdf(ikm, utf8('Content-Encoding: nonce\0'), 12, salt);
 
   return { salt, localKeyPair, localPublicKey, key, nonce };
 }
@@ -290,13 +370,13 @@ async function importClientKey(raw) {
   return crypto.subtle.importKey('raw', raw, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
 }
 
-async function hkdf(secret, info, length = 32) {
+async function hkdf(secret, info, length = 32, salt = new Uint8Array(32)) {
   const keyMaterial = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: 'SHA-256',
-      salt: new Uint8Array(32),
+      salt,
       info,
     },
     keyMaterial,
