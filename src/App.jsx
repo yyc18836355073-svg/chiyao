@@ -52,6 +52,7 @@ export default function App() {
   const [currentPeriod, setCurrentPeriod] = useState('morning');
   const [nowTs, setNowTs] = useState(Date.now());
   const [notificationGranted, setNotificationGranted] = useState(false);
+  const [pushState, setPushState] = useState('idle'); // idle | busy | done
   const [selectedDayModal, setSelectedDayModal] = useState(null);
   const [showEmergencyUnlockModal, setShowEmergencyUnlockModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -161,9 +162,16 @@ export default function App() {
   };
 
   const requestNotification = () => {
+    setPushState('busy');
     enablePush().then((res) => {
       setNotificationGranted(res.ok && Notification.permission === 'granted');
-      if (!res.ok && res.error) alert('开启推送失败：' + res.error);
+      setPushState('done');
+      if (!res.ok) {
+        const detail = res.steps ? res.steps.join(' | ') : '';
+        alert('开启推送失败：' + res.error + (detail ? '\n诊断: ' + detail : ''));
+      } else {
+        alert('推送已开启！\n诊断: ' + (res.steps || []).join(' | '));
+      }
     });
   };
 
@@ -355,14 +363,14 @@ export default function App() {
 
         {!notificationGranted && (
           <div 
-            onClick={requestNotification}
+            onClick={pushState === 'busy' ? undefined : requestNotification}
             className="bg-amber-950/80 border border-amber-600/50 rounded-xl p-2.5 text-xs text-amber-200 flex justify-between items-center cursor-pointer active:scale-98 transition-transform"
           >
             <div className="flex items-center gap-2">
               <span className="text-base">🔔</span>
-              <span>建议开启系统通知，后台倒计时结束自动提醒</span>
+              <span>{pushState === 'busy' ? '正在开启推送…' : '建议开启系统通知，后台倒计时结束自动提醒'}</span>
             </div>
-            <span className="font-semibold text-amber-400 bg-amber-900/60 px-2 py-1 rounded-lg">开启</span>
+            <span className="font-semibold text-amber-400 bg-amber-900/60 px-2 py-1 rounded-lg">{pushState === 'busy' ? '…' : '开启'}</span>
           </div>
         )}
 
