@@ -175,13 +175,18 @@ export default {
       const tzOffset = Number(s.tzOffset) || 480;
       const localMs = now + tzOffset * 60000;
       const d = new Date(localMs);
-      const pad = (n) => String(n).padStart(2, '0');
-      const hhmm = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
       const localDate = d.toISOString().slice(0, 10);
 
       for (const period of ['morning', 'evening']) {
         const time = s[period];
-        if (!time || time !== hhmm) continue;
+        if (!time) continue;
+        const [th, tm] = time.split(':').map(Number);
+        const targetSec = th * 3600 + tm * 60;
+        const nowSec = d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+        // cron 触发可能有延迟，目标时间后的 2 分钟窗口内都算（当日防重）
+        const diff = nowSec - targetSec;
+        if (diff < 0 || diff > 120) continue;
+
         const pushedKey = `dailyPushed:${s.clientId}:${localDate}:${period}`;
         if (await env.PUSH_KV.get(pushedKey)) continue;
 
@@ -271,7 +276,9 @@ async function getReminders(env) {
 
 async function getDailySettings(env) {
   const raw = await env.PUSH_KV.get('dailySettings');
-  return raw ? JSON.parse(raw) : [];
+  if (!raw) return [];
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 // ===== Web Push 加密实现（RFC 8291 / aes128gcm） =====
