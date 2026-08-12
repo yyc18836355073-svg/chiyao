@@ -129,11 +129,18 @@ export async function enablePush() {
   }
 }
 
-// 上报倒计时提醒计划（到达 at 时推送）
-export async function scheduleReminder({ at, title, body }) {
+// 上报倒计时提醒计划（到达 at 时推送；repeatMinutes>0 则每 repeatMinutes 分钟循环提醒，
+// 直到打卡完成取消或超过默认 2 小时时限）
+export async function scheduleReminder({ at, title, body, repeatMinutes }) {
   return api('/api/reminder', {
     method: 'POST',
-    body: JSON.stringify({ clientId: getClientId(), at, title, body }),
+    body: JSON.stringify({
+      clientId: getClientId(),
+      at,
+      title,
+      body,
+      repeatMinutes: repeatMinutes || 0,
+    }),
   });
 }
 

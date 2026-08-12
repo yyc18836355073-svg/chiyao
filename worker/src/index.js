@@ -60,12 +60,17 @@ export default {
         }
         // 写回前重读最新快照，避免并发覆盖
         const latestR = await getReminders(env);
+        const repeatMinutes = Math.max(0, Math.floor(Number(body.repeatMinutes) || 0));
+        const atNum = Number(at);
         latestR.push({
           id: `${clientId}-${at}-${Date.now()}`,
           clientId,
-          at: Number(at),
+          at: atNum,
           title: title || 'HP服药打卡',
           body: text || '该吃药了！',
+          // 循环提醒：每 repeatMinutes 分钟重推一次，直到 repeatUntil（默认 2 小时后）或打卡完成取消
+          repeatMinutes,
+          repeatUntil: Number(body.repeatUntil) || atNum + 2 * 3600 * 1000,
         });
         await env.PUSH_KV.put('reminders', JSON.stringify(latestR));
         return new Response(JSON.stringify({ ok: true, count: latestR.length }), { headers: cors });
@@ -194,7 +199,6 @@ export default {
     const subs = await getSubscriptions(env);
     let pushed = 0;
     let failed = 0;
-    const successIds = new Set();
 
     // ===== 每日定时提醒（早/晚固定时间）=====
     const dailySettings = await getDailySettings(env);
@@ -247,14 +251,31 @@ export default {
       }
     }
 
-    // ===== 一次性到期提醒 =====
+    // ===== 到期提醒（一次性 / 循环）=====
     const reminders = await getReminders(env);
     const due = reminders.filter((r) => r.at <= now);
 
     if (due.length > 0) {
+      // id -> { remove: true } 或 { lastPushedAt: ts }
+      const outcome = new Map();
+
       for (const reminder of due) {
+        const repeatInterval = (Number(reminder.repeatMinutes) || 0) * 60 * 1000;
+        const repeatUntil = Number(reminder.repeatUntil) || 0;
+
+        // 循环提醒超过时限（如 2 小时）→ 移除，不再推送
+        if (reminder.lastPushedAt && repeatUntil && now > repeatUntil) {
+          outcome.set(reminder.id, { remove: true });
+          console.log(`[scheduled] 循环提醒 ${reminder.id} 超过时限，停止`);
+          continue;
+        }
+        // 循环提醒未到下次推送时间
+        if (reminder.lastPushedAt && repeatInterval > 0 && now - reminder.lastPushedAt < repeatInterval) {
+          continue;
+        }
+
         const targets = subs.filter((s) => s.clientId === reminder.clientId || reminder.clientId === 'all');
-        console.log(`[scheduled] 处理 ${reminder.id}: due=${due.length} subs=${subs.length} targets=${targets.length}`);
+        console.log(`[scheduled] 处理 ${reminder.id}: due=${due.length} subs=${subs.length} targets=${targets.length} repeat=${reminder.repeatMinutes || 0}min`);
         // 若该设备在 5 分钟前才刚提醒过，跳过（防重复）
         const lastKey = `lastpush:${reminder.clientId}`;
         const lastTs = Number((await env.PUSH_KV.get(lastKey)) || 0);
@@ -277,16 +298,29 @@ export default {
           }
         }
         if (ok) {
-          successIds.add(reminder.id);
           await env.PUSH_KV.put(lastKey, String(now));
+          if (repeatInterval > 0) {
+            // 循环提醒：保留，记录上次推送时间
+            outcome.set(reminder.id, { lastPushedAt: now });
+          } else {
+            outcome.set(reminder.id, { remove: true });
+          }
         }
       }
 
       // 写回前重新读取最新快照，避免覆盖处理期间并发新增的提醒
       const latest = await getReminders(env);
-      const rest = latest.filter((r) => !successIds.has(r.id));
+      const rest = latest
+        .filter((r) => !(outcome.get(r.id) && outcome.get(r.id).remove))
+        .map((r) => {
+          const o = outcome.get(r.id);
+          if (o && o.lastPushedAt) return { ...r, lastPushedAt: o.lastPushedAt };
+          return r;
+        });
       await env.PUSH_KV.put('reminders', JSON.stringify(rest));
-      console.log(`[scheduled] 到期 ${due.length} 条，推送成功 ${successIds.size}，失败 ${failed}，剩余 ${rest.length} 条`);
+      const removed = latest.length - rest.length;
+      const repeatCount = [...outcome.values()].filter((o) => o.lastPushedAt).length;
+      console.log(`[scheduled] 到期 ${due.length} 条，推送成功 ${repeatCount}，失败 ${failed}，移除 ${removed}，剩余 ${rest.length} 条`);
     }
   },
 };

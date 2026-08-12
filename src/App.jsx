@@ -248,7 +248,7 @@ export default function App() {
     }
   }, [nowTs, activeTimer]);
 
-  // 启动倒计时时，把提醒计划上报给推送服务（后台到点也会推送）
+  // 启动倒计时时，把提醒计划上报给推送服务（后台到点也会推送；未处理则每 10 分钟循环提醒）
   useEffect(() => {
     if (!activeTimer) return;
 
@@ -263,10 +263,7 @@ export default function App() {
     }
     if (!title) return;
 
-    scheduleReminder({ at: activeTimer.targetTs, title, body });
-    return () => {
-      cancelReminders();
-    };
+    scheduleReminder({ at: activeTimer.targetTs, title, body, repeatMinutes: 10 });
   }, [activeTimer]);
 
   // 10 小时防呆锁定判定（基准为"开始倒计时"与"实际服药打卡"中较晚者）
@@ -328,6 +325,8 @@ export default function App() {
   };
 
   const handleFinishedMeal = () => {
+    // 进入饭后阶段，停止饭前提醒的循环推送
+    cancelReminders();
     const durationMins = 15;
     const targetTs = Date.now() + durationMins * 60 * 1000;
 
@@ -342,6 +341,8 @@ export default function App() {
   };
 
   const handleConfirmDoseComplete = () => {
+    // 完成打卡：停止所有循环提醒
+    cancelReminders();
     const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     setLogs(prev => {
       const dayData = prev[currentDayNum] || { morning: false, evening: false };
@@ -364,6 +365,7 @@ export default function App() {
 
   const handleResetTimer = () => {
     if (window.confirm('确定要重置当前的服药倒计时吗？')) {
+      cancelReminders();
       setActiveTimer(null);
     }
   };
