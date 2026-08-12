@@ -4,21 +4,25 @@
     "version": "1.0.0",
     "type": "module",
     "scripts": {
-          "dev": "vite",
-          "build": "vite build && node scripts/version-sw.cjs",
-          "preview": "vite preview"
+        "dev": "vite",
+        "build": "vite build && node scripts/version-sw.cjs",
+        "preview": "vite preview"
     },
     "dependencies": {
-          "lucide-react": "^0.344.0",
-          "react": "^18.2.0",
-          "react-dom": "^18.2.0"
+        "@capacitor/cli": "^8.5.0",
+        "@capacitor/core": "^8.5.0",
+        "@capacitor/ios": "^8.5.0",
+        "@capacitor/local-notifications": "^8.2.1",
+        "lucide-react": "^0.344.0",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0"
     },
     "devDependencies": {
-          "@vitejs/plugin-react": "^4.2.1",
-          "autoprefixer": "^10.4.18",
-          "postcss": "^8.4.35",
-          "tailwindcss": "^3.4.1",
-          "vite": "^5.1.4",
-          "vite-plugin-pwa": "^0.20.0"
+        "@vitejs/plugin-react": "^4.2.1",
+        "autoprefixer": "^10.4.18",
+        "postcss": "^8.4.35",
+        "tailwindcss": "^3.4.1",
+        "vite": "^5.1.4",
+        "vite-plugin-pwa": "^0.20.0"
     }
 }

@@ -1,0 +1,14 @@
+{
+  "appId": "com.chiyao.hp",
+  "appName": "幽门螺杆菌四联打卡",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon_config_sample",
+      "iconColor": "#488AFF"
+    }
+  }
+}

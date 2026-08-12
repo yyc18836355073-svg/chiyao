@@ -3,3 +3,5 @@ dist
 worker/node_modules
 worker/.wrangler
 worker/.dev.vars
+ios/App/App/public
+ios/App/DerivedData
