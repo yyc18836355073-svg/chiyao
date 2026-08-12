@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
-import { enablePush, scheduleReminder, cancelReminders, saveDailySchedule, cancelDailySchedule } from './push.js';
+import { enablePush, scheduleReminder, cancelReminders, saveDailySchedule, cancelDailySchedule, showImmediateNotification, isNativeApp } from './push.js';
 import Calendar from './components/Calendar.jsx';
 import { DayDetailModal, UnlockModal, SettingsModal } from './components/Modals.jsx';
 
@@ -172,6 +172,12 @@ export default function App() {
       navigator.vibrate([300, 150, 300, 150, 400]);
     }
     playAlertSound();
+
+    if (isNativeApp()) {
+      // App 内：走本地通知（浏览器无 Notification API）
+      showImmediateNotification(title, body);
+      return;
+    }
 
     if ('Notification' in window && Notification.permission === 'granted') {
       try {
