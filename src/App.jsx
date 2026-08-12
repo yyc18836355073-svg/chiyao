@@ -64,7 +64,10 @@ export default function App() {
   });
   const [dailySaved, setDailySaved] = useState(null); // null | 'saving' | 'saved' | 'error'
 
-  const [currentPeriod, setCurrentPeriod] = useState('morning');
+  // 打开 App 时按当前时间自动选择时段（15 点前=早餐，之后=晚餐），避免晚上还停在早上的界面
+  const [currentPeriod, setCurrentPeriod] = useState(() => {
+    return new Date().getHours() >= 15 ? 'evening' : 'morning';
+  });
   const [nowTs, setNowTs] = useState(Date.now());
   const [notificationGranted, setNotificationGranted] = useState(false);
   const [pushState, setPushState] = useState('idle'); // idle | busy | done
@@ -354,6 +357,8 @@ export default function App() {
     if (currentPeriod === 'morning') {
       setLastMorningDoneTs(Date.now());
     }
+    // 打卡完成后自动切换到另一时段（早上→晚上），避免误重复打卡
+    setCurrentPeriod(currentPeriod === 'morning' ? 'evening' : 'morning');
     setActiveTimer(null);
   };
 
