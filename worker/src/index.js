@@ -7,11 +7,20 @@ export default {
     const cors = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Api-Token',
     };
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: cors });
+    }
+
+    // 除公钥/健康检查外，所有接口需要 X-Api-Token 鉴权
+    const PUBLIC_PATHS = ['/api/public-key', '/api/health'];
+    if (!PUBLIC_PATHS.includes(url.pathname)) {
+      const token = request.headers.get('x-api-token');
+      if (!env.API_TOKEN || token !== env.API_TOKEN) {
+        return new Response(JSON.stringify({ ok: false, error: '未授权' }), { status: 401, headers: cors });
+      }
     }
 
     try {
@@ -31,9 +40,10 @@ export default {
           return new Response(JSON.stringify({ ok: false, error: '无效订阅' }), { status: 400, headers: cors });
         }
 
-        const subs = await getSubscriptions(env);
-        const others = subs.filter((s) => s.clientId !== clientId && s.endpoint !== subscription.endpoint);
-        const clientSubs = subs.filter((s) => s.clientId === clientId);
+        // 写回前重读最新快照，避免并发覆盖
+        const latest = await getSubscriptions(env);
+        const others = latest.filter((s) => s.clientId !== clientId && s.endpoint !== subscription.endpoint);
+        const clientSubs = latest.filter((s) => s.clientId === clientId);
         // 同一设备最多保留 3 个旧订阅，避免重复
         const keepClientSubs = clientSubs
           .concat([{ clientId, subscription, updatedAt: Date.now() }])
@@ -50,16 +60,17 @@ export default {
         if (!clientId || !at) {
           return new Response(JSON.stringify({ ok: false, error: '缺少参数' }), { status: 400, headers: cors });
         }
-        const reminders = await getReminders(env);
-        reminders.push({
+        // 写回前重读最新快照，避免并发覆盖
+        const latestR = await getReminders(env);
+        latestR.push({
           id: `${clientId}-${at}-${Date.now()}`,
           clientId,
           at: Number(at),
           title: title || 'HP服药打卡',
           body: text || '该吃药了！',
         });
-        await env.PUSH_KV.put('reminders', JSON.stringify(reminders));
-        return new Response(JSON.stringify({ ok: true, count: reminders.length }), { headers: cors });
+        await env.PUSH_KV.put('reminders', JSON.stringify(latestR));
+        return new Response(JSON.stringify({ ok: true, count: latestR.length }), { headers: cors });
       }
 
       // 取消该设备的提醒（打卡完成时）
@@ -164,6 +175,24 @@ export default {
   // 每分钟定时检查到期提醒
   async scheduled(event, env, ctx) {
     const now = Date.now();
+
+    // 每日清理一次 7 天前的诊断日志
+    const cleanKey = 'diagClean:' + new Date().toISOString().slice(0, 10);
+    if (!(await env.PUSH_KV.get(cleanKey))) {
+      const expireMs = 7 * 24 * 3600 * 1000;
+      let cursor;
+      do {
+        const page = await env.PUSH_KV.list({ prefix: 'diag:', cursor, limit: 1000 });
+        for (const k of page.keys) {
+          const ts = Number(k.name.split(':')[1]);
+          if (ts && now - ts > expireMs) await env.PUSH_KV.delete(k.name);
+        }
+        cursor = page.cursor;
+      } while (cursor);
+      await env.PUSH_KV.put(cleanKey, String(now));
+      console.log(`[scheduled] 已清理过期诊断日志`);
+    }
+
     const subs = await getSubscriptions(env);
     let pushed = 0;
     let failed = 0;

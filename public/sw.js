@@ -1,5 +1,6 @@
-const CACHE_NAME = 'hp-pwa-v1.2.0';
+const CACHE_NAME = 'hp-pwa-v__VERSION__';
 const DIAG_URL = 'https://hp-push-worker.hp-push.workers.dev/api/diag';
+const API_TOKEN = 'hp_vctql96jxws8fk4er2ban5mi';
 
 const PRECACHE_ASSETS = [
   './',
@@ -41,7 +42,7 @@ async function reportDiag(evt) {
     try { permission = Notification.permission; } catch (e) {}
     await fetch(DIAG_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Api-Token': API_TOKEN },
       body: JSON.stringify({
         evt,
         swTs: Date.now(),
@@ -71,7 +72,7 @@ self.addEventListener('push', (event) => {
     badge: './pwa-192x192.png',
     tag: data.tag || 'hp-reminder',
     requireInteraction: true,
-    data: { url: './' }
+    data: { url: data.url || './' }
   };
 
   event.waitUntil(
@@ -83,12 +84,13 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || './';
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
         if ('focus' in client) return client.focus();
       }
-      if (clients.openWindow) return clients.openWindow('./');
+      if (clients.openWindow) return clients.openWindow(url);
     })
   );
 });

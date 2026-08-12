@@ -1,5 +1,6 @@
 // Web Push 订阅与提醒上报工具
 const WORKER_BASE = 'https://hp-push-worker.hp-push.workers.dev';
+const API_TOKEN = 'hp_vctql96jxws8fk4er2ban5mi';
 
 const CLIENT_ID_KEY = 'hp_push_client_id';
 
@@ -14,10 +15,10 @@ function getClientId() {
 
 async function api(path, options) {
   try {
-    const resp = await fetch(WORKER_BASE + path, {
+    const resp = await withTimeout(fetchWithRetry(WORKER_BASE + path, {
       ...options,
-      headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) },
-    });
+      headers: { 'Content-Type': 'application/json', 'X-Api-Token': API_TOKEN, ...(options?.headers || {}) },
+    }), 15000, '请求');
     return await resp.json();
   } catch (e) {
     console.warn('[push] 上报失败:', e);
@@ -32,11 +33,11 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
-async function fetchWithRetry(url, { retries = 2, ms = 8000 } = {}) {
+async function fetchWithRetry(url, init, { retries = 2, ms = 8000 } = {}) {
   let lastErr;
   for (let i = 0; i <= retries; i++) {
     try {
-      return await fetch(url);
+      return await fetch(url, init);
     } catch (e) {
       lastErr = e;
       if (i < retries) await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
@@ -96,7 +97,9 @@ export async function enablePush() {
     const reg = await ensureServiceWorker();
     step('sw', !!reg.active);
 
-    const keyResp = await withTimeout(fetchWithRetry(WORKER_BASE + '/api/public-key', { retries: 2, ms: 8000 }), 26000, '获取公钥');
+    const keyResp = await withTimeout(fetchWithRetry(WORKER_BASE + '/api/public-key', {
+      headers: { 'X-Api-Token': API_TOKEN },
+    }, { retries: 2, ms: 8000 }), 26000, '获取公钥');
     const { publicKey } = await keyResp.json();
     step('publicKey', !!publicKey);
     if (!publicKey) return { ok: false, error: '获取推送公钥失败', steps };

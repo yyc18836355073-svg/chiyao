@@ -1,11 +1,14 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
 import { enablePush, scheduleReminder, cancelReminders, saveDailySchedule, cancelDailySchedule } from './push.js';
+import Calendar from './components/Calendar.jsx';
+import { DayDetailModal, UnlockModal, SettingsModal } from './components/Modals.jsx';
 
 // 本地存储 KEY 定义
 const STORAGE_KEYS = {
   START_DATE: 'hp_start_date',
   LOGS: 'hp_logs_v1',
   LAST_MORNING: 'hp_last_morning_ts',
+  LAST_MORNING_DONE: 'hp_last_morning_done_ts',
   ACTIVE_TIMER: 'hp_active_timer_v1',
   DAILY_SCHEDULE: 'hp_daily_schedule',
 };
@@ -42,6 +45,11 @@ export default function App() {
 
   const [lastMorningTs, setLastMorningTs] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.LAST_MORNING);
+    return saved ? parseInt(saved, 10) : 0;
+  });
+
+  const [lastMorningDoneTs, setLastMorningDoneTs] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.LAST_MORNING_DONE);
     return saved ? parseInt(saved, 10) : 0;
   });
 
@@ -100,6 +108,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.LAST_MORNING, lastMorningTs.toString());
   }, [lastMorningTs]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.LAST_MORNING_DONE, lastMorningDoneTs.toString());
+  }, [lastMorningDoneTs]);
 
   useEffect(() => {
     if (activeTimer) {
@@ -254,13 +266,17 @@ export default function App() {
     };
   }, [activeTimer]);
 
-  // 10 小时防呆锁定判定
+  // 10 小时防呆锁定判定（基准为"开始倒计时"与"实际服药打卡"中较晚者）
   const getSafetyLockInfo = () => {
-    if (currentPeriod !== 'evening' || lastMorningTs === 0) {
+    if (currentPeriod !== 'evening') {
+      return { isLocked: false, remainingSec: 0 };
+    }
+    const baseTs = Math.max(lastMorningTs, lastMorningDoneTs);
+    if (baseTs === 0) {
       return { isLocked: false, remainingSec: 0 };
     }
 
-    const elapsedMs = nowTs - lastMorningTs;
+    const elapsedMs = nowTs - baseTs;
     const TEN_HOURS_MS = 10 * 60 * 60 * 1000;
 
     if (elapsedMs < TEN_HOURS_MS) {
@@ -335,6 +351,9 @@ export default function App() {
         }
       };
     });
+    if (currentPeriod === 'morning') {
+      setLastMorningDoneTs(Date.now());
+    }
     setActiveTimer(null);
   };
 
@@ -573,270 +592,61 @@ export default function App() {
         )}
       </main>
 
-      {/* 14 天打卡网格日历 */}
-      <section className="space-y-2.5">
-        <div className="flex justify-between items-center text-xs">
-          <h2 className="font-bold text-slate-200 flex items-center gap-1">
-            <span>📅</span> 14 天打卡日历视图
-          </h2>
-          <span className="text-slate-400">点击日期可手动补打卡</span>
-        </div>
-
-        <div className="grid grid-cols-7 gap-1.5">
-          {Array.from({ length: 14 }).map((_, idx) => {
-            const dayNum = idx + 1;
-            const dayLog = logs[dayNum] || { morning: false, evening: false };
-            const isToday = dayNum === currentDayNum;
-
-            return (
-              <div
-                key={dayNum}
-                onClick={() => setSelectedDayModal(dayNum)}
-                className={`p-1.5 rounded-xl border text-center cursor-pointer transition-all active:scale-95 flex flex-col justify-between h-20 ${
-                  isToday
-                    ? 'bg-slate-800 border-sky-500 shadow-md shadow-sky-950'
-                    : 'bg-slate-800/60 border-slate-700/60 hover:bg-slate-800'
-                }`}
-              >
-                <div className="text-[10px] text-slate-400 font-mono flex justify-between items-center">
-                  <span>D{dayNum}</span>
-                  <span>{getDayDateLabel(dayNum)}</span>
-                </div>
-
-                <div className="space-y-1 my-auto">
-                  <div className={`text-[10px] py-0.5 rounded font-medium flex items-center justify-center gap-0.5 ${
-                    dayLog.morning 
-                      ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-600/40' 
-                      : 'bg-slate-900/60 text-slate-500'
-                  }`}>
-                    <span>早</span>
-                    <span>{dayLog.morning ? '✓' : '•'}</span>
-                  </div>
-
-                  <div className={`text-[10px] py-0.5 rounded font-medium flex items-center justify-center gap-0.5 ${
-                    dayLog.evening 
-                      ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-600/40' 
-                      : 'bg-slate-900/60 text-slate-500'
-                  }`}>
-                    <span>晚</span>
-                    <span>{dayLog.evening ? '✓' : '•'}</span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+{/* 14 天打卡网格日历 */}
+      <Calendar
+        logs={logs}
+        currentDayNum={currentDayNum}
+        getDayDateLabel={getDayDateLabel}
+        onSelect={(dayNum) => setSelectedDayModal(dayNum)}
+      />
 
       {/* 补打卡 Modal */}
       {selectedDayModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-3xl p-5 w-full max-w-xs space-y-4 shadow-2xl">
-            <div className="flex justify-between items-center border-b border-slate-700 pb-2.5">
-              <h3 className="font-bold text-sky-400">
-                第 {selectedDayModal} 天打卡记录 ({getDayDateLabel(selectedDayModal)})
-              </h3>
-              <button onClick={() => setSelectedDayModal(null)} className="text-slate-400 hover:text-slate-200 text-sm font-bold">
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex justify-between items-center bg-slate-900/60 p-3 rounded-2xl border border-slate-700">
-                <div>
-                  <span className="text-sm font-medium text-slate-200">🌅 早餐服药</span>
-                  <span className="text-xs block text-slate-400">
-                    {logs[selectedDayModal]?.morningTime ? `完成于 ${logs[selectedDayModal].morningTime}` : '未完成'}
-                  </span>
-                </div>
-                <button
-                  onClick={() => handleToggleLogSlot(selectedDayModal, 'morning')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                    logs[selectedDayModal]?.morning
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                  }`}
-                >
-                  {logs[selectedDayModal]?.morning ? '已完成 (撤销)' : '标记完成'}
-                </button>
-              </div>
-
-              <div className="flex justify-between items-center bg-slate-900/60 p-3 rounded-2xl border border-slate-700">
-                <div>
-                  <span className="text-sm font-medium text-slate-200">🌙 晚餐服药</span>
-                  <span className="text-xs block text-slate-400">
-                    {logs[selectedDayModal]?.eveningTime ? `完成于 ${logs[selectedDayModal].eveningTime}` : '未完成'}
-                  </span>
-                </div>
-                <button
-                  onClick={() => handleToggleLogSlot(selectedDayModal, 'evening')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                    logs[selectedDayModal]?.evening
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                  }`}
-                >
-                  {logs[selectedDayModal]?.evening ? '已完成 (撤销)' : '标记完成'}
-                </button>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setSelectedDayModal(null)}
-              className="w-full py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold rounded-xl"
-            >
-              关闭
-            </button>
-          </div>
-        </div>
+        <DayDetailModal
+          dayNum={selectedDayModal}
+          dateLabel={getDayDateLabel(selectedDayModal)}
+          logs={logs}
+          onToggle={handleToggleLogSlot}
+          onClose={() => setSelectedDayModal(null)}
+        />
       )}
 
       {/* 解除安全锁警告 Modal */}
       {showEmergencyUnlockModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-amber-600/80 rounded-3xl p-5 w-full max-w-xs space-y-4 text-center shadow-2xl">
-            <div className="text-3xl">⚠️</div>
-            <h3 className="font-bold text-amber-400">解除间隔安全锁警告</h3>
-            <p className="text-xs text-slate-300 text-left leading-relaxed">
-              提前服用第二次抗生素可能导致血药浓度过高或剧烈消化道反应。请仅在跨时区、作息倒班等极特殊情况下解除。
-            </p>
-            <div className="flex gap-2 pt-2">
-              <button
-                onClick={() => setShowEmergencyUnlockModal(false)}
-                className="flex-1 py-2.5 bg-slate-700 text-slate-300 text-xs font-bold rounded-xl"
-              >
-                保持锁定
-              </button>
-              <button
-                onClick={() => {
-                  setLastMorningTs(0);
-                  setShowEmergencyUnlockModal(false);
-                }}
-                className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-xl"
-              >
-                强制解锁
-              </button>
-            </div>
-          </div>
-        </div>
+        <UnlockModal
+          onClose={() => setShowEmergencyUnlockModal(false)}
+          onConfirm={() => {
+            setLastMorningTs(0);
+            setLastMorningDoneTs(0);
+            setShowEmergencyUnlockModal(false);
+          }}
+        />
       )}
 
       {/* 设置与说明 Modal */}
       {showSettingsModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-3xl p-5 w-full max-w-sm space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center border-b border-slate-700 pb-2.5">
-              <h3 className="font-bold text-sky-400">应用设置与疗程说明</h3>
-              <button onClick={() => setShowSettingsModal(false)} className="text-slate-400 hover:text-slate-200 text-sm font-bold">
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-1.5 text-xs text-left">
-              <label className="font-semibold text-slate-300">疗程开始日期：</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-slate-100 font-mono"
-              />
-            </div>
-
-            <div className="bg-slate-900/80 p-3 rounded-2xl border border-slate-700/80 text-left space-y-2.5">
-              <div className="flex items-center justify-between">
-                <p className="font-bold text-sky-300 text-xs">⏰ 每日定时吃药提醒</p>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                  dailySaved === 'saved' ? 'bg-emerald-500/20 text-emerald-300'
-                  : dailySaved === 'error' ? 'bg-rose-500/20 text-rose-300'
-                  : dailySaved === 'saving' ? 'bg-sky-500/20 text-sky-300'
-                  : 'bg-slate-700/60 text-slate-400'
-                }`}>
-                  {dailySaved === 'saved' ? '✓ 已保存' : dailySaved === 'error' ? '保存失败' : dailySaved === 'saving' ? '保存中…' : '随时可修改'}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 flex-1">
-                  <span className="text-slate-300">🌅 早餐提醒</span>
-                  <input
-                    type="time"
-                    value={dailySchedule.morning || ''}
-                    onChange={(e) => setDailySchedule(prev => ({ ...prev, morning: e.target.value }))}
-                    className="flex-1 bg-slate-800 border border-slate-600 rounded-lg p-1.5 text-slate-100 font-mono text-center"
-                  />
-                </div>
-                <div className="flex items-center gap-2 flex-1">
-                  <span className="text-slate-300">🌙 晚餐提醒</span>
-                  <input
-                    type="time"
-                    value={dailySchedule.evening || ''}
-                    onChange={(e) => setDailySchedule(prev => ({ ...prev, evening: e.target.value }))}
-                    className="flex-1 bg-slate-800 border border-slate-600 rounded-lg p-1.5 text-slate-100 font-mono text-center"
-                  />
-                </div>
-              </div>
-
-              <p className="text-[10px] text-slate-400 leading-relaxed">
-                到点自动推送通知提醒服药（需已开启推送）。留空表示关闭该时段提醒。
-              </p>
-
-              <div className="flex gap-2 pt-1">
-                <button
-                  onClick={handleSaveDaily}
-                  disabled={dailySaved === 'saving'}
-                  className="flex-1 py-2 bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs font-bold rounded-xl"
-                >
-                  保存提醒时间
-                </button>
-                <button
-                  onClick={handleCancelDaily}
-                  disabled={dailySaved === 'saving'}
-                  className="px-3 py-2 bg-rose-950/60 hover:bg-rose-900 disabled:opacity-50 text-rose-300 border border-rose-700/40 text-xs font-bold rounded-xl"
-                >
-                  关闭
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-slate-900/80 p-3 rounded-2xl border border-slate-700/80 text-left text-xs space-y-2 text-slate-300 leading-relaxed">
-              <p className="font-bold text-sky-300">💡 标准四联疗法提示：</p>
-              <p>1. <strong>饭前药 (PPI+铋剂)：</strong> 饭前30分钟服用，抑酸并保护胃黏膜屏障。</p>
-              <p>2. <strong>饭后药 (2种抗生素)：</strong> 饭后15-30分钟服用，缓冲消化并降低胃肠刺激。</p>
-              <p>3. <strong>严禁饮酒：</strong> 服药期间及停药一周内严禁接触任何酒精。</p>
-            </div>
-
-            <div className="space-y-2 pt-2">
-              <button
-                onClick={requestNotification}
-                className="w-full py-2.5 bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold rounded-xl"
-              >
-                重新申请系统提醒权限
-              </button>
-              <button
-                onClick={() => {
-                  if (window.confirm('警告：这将会清空所有历史打卡记录。确定继续吗？')) {
-                    localStorage.clear();
-                    setLogs(createInitialLogs());
-                    setLastMorningTs(0);
-                    setActiveTimer(null);
-                    setStartDate(getLocalDateStr());
-                    setShowSettingsModal(false);
-                  }
-                }}
-                className="w-full py-2.5 bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-700/50 text-xs font-bold rounded-xl"
-              >
-                重置所有打卡数据
-              </button>
-            </div>
-
-            <button
-              onClick={() => setShowSettingsModal(false)}
-              className="w-full py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold rounded-xl"
-            >
-              返回主界面
-            </button>
-          </div>
-        </div>
+        <SettingsModal
+          startDate={startDate}
+          onStartDateChange={setStartDate}
+          dailySchedule={dailySchedule}
+          onDailyChange={setDailySchedule}
+          dailySaved={dailySaved}
+          onSaveDaily={handleSaveDaily}
+          onCancelDaily={handleCancelDaily}
+          onRequestNotification={requestNotification}
+          onResetAll={() => {
+            if (window.confirm('警告：这将会清空所有历史打卡记录。确定继续吗？')) {
+              localStorage.clear();
+              setLogs(createInitialLogs());
+              setLastMorningTs(0);
+              setLastMorningDoneTs(0);
+              setActiveTimer(null);
+              setStartDate(getLocalDateStr());
+              setShowSettingsModal(false);
+            }
+          }}
+          onClose={() => setShowSettingsModal(false)}
+        />
       )}
 
     </div>

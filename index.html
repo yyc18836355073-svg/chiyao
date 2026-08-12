@@ -45,31 +45,5 @@
   <script type="module" src="/src/main.jsx"></script>
 
 
-  <!-- PWA Service Worker -->
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-
-        navigator.serviceWorker.register('/chiyao/sw.js')
-
-          .then(reg => {
-            console.log(
-              '[PWA] Service Worker 注册成功:',
-              reg.scope
-            );
-          })
-
-          .catch(err => {
-            console.error(
-              '[PWA] Service Worker 注册失败:',
-              err
-            );
-          });
-
-      });
-    }
-  </script>
-
-
 </body>
 </html>
