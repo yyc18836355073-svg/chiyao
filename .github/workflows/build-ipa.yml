@@ -1,0 +1,61 @@
+name: Build IPA (Unsigned)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: 'ipa'
+  cancel-in-progress: true
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 构建 web 产物
+        run: npm run build
+
+      - name: 同步到 iOS 工程
+        run: npx cap sync ios
+
+      - name: 构建无签名 .app
+        run: |
+          cd ios/App
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: 组装无签名 .ipa
+        run: |
+          mkdir -p Payload
+          cp -R ios/App/build/Build/Products/Release-iphoneos/App.app Payload/
+          zip -qry App.ipa Payload
+          ls -lh App.ipa
+
+      - name: 上传 IPA 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: hp-quad-therapy-app
+          path: App.ipa
+          if-no-files-found: error
