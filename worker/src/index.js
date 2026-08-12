@@ -44,11 +44,9 @@ export default {
         const latest = await getSubscriptions(env);
         const others = latest.filter((s) => s.clientId !== clientId && s.endpoint !== subscription.endpoint);
         const clientSubs = latest.filter((s) => s.clientId === clientId);
-        // 同一设备最多保留 3 个旧订阅，避免重复
-        const keepClientSubs = clientSubs
-          .concat([{ clientId, subscription, updatedAt: Date.now() }])
-          .slice(-3);
-        const merged = others.concat(keepClientSubs);
+        // 相同 endpoint 直接替换（防止同设备重复推送），不同 endpoint（重装/换设备）最多保留 2 条历史
+        const otherEndpoints = clientSubs.filter((s) => s.endpoint !== subscription.endpoint).slice(-2);
+        const merged = others.concat([{ clientId, subscription, updatedAt: Date.now() }], otherEndpoints);
         await env.PUSH_KV.put('subscriptions', JSON.stringify(merged));
         return new Response(JSON.stringify({ ok: true }), { headers: cors });
       }
