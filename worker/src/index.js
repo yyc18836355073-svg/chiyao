@@ -308,10 +308,18 @@ export default {
         }
 
         const targets = subs.filter((s) => s.clientId === reminder.clientId || reminder.clientId === 'all');
-        console.log(`[scheduled] 处理 ${reminder.id}: due=${due.length} subs=${subs.length} targets=${targets.length} repeat=${reminder.repeatMinutes || 0}min`);
+        // 兜底：同 clientId 只推送最新一个 endpoint（避免历史重复订阅导致连弹），
+        // 即使 KV 里残留旧订阅数据也不会多弹
+        const targetByClient = new Map();
+        for (const t of targets) {
+          const cur = targetByClient.get(t.clientId);
+          if (!cur || (t.updatedAt || 0) > (cur.updatedAt || 0)) targetByClient.set(t.clientId, t);
+        }
+        const uniqueTargets = [...targetByClient.values()];
+        console.log(`[scheduled] 处理 ${reminder.id}: due=${due.length} subs=${subs.length} targets=${uniqueTargets.length} repeat=${reminder.repeatMinutes || 0}min`);
 
         let ok = false;
-        for (const t of targets) {
+        for (const t of uniqueTargets) {
           try {
             const payload = JSON.stringify({ title: reminder.title, body: reminder.body, tag: 'hp-reminder' });
             const result = await sendPush(env, t.subscription, payload);
@@ -399,7 +407,8 @@ async function sendPush(env, subscription, payload) {
     headers: {
       'Content-Type': 'application/octet-stream',
       'Content-Encoding': 'aes128gcm',
-      'TTL': '86400',
+      // TTL 短：设备离线时网关只保留 5 分钟，上线后不会积攒多条连环弹
+      'TTL': '300',
       'Urgency': 'high',
       'Topic': 'hp-quad-therapy',
       'Authorization': `vapid t=${jwt}, k=${env.VAPID_PUBLIC_KEY}`,
