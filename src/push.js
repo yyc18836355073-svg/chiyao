@@ -45,14 +45,47 @@ function getClientId() {
 
 async function api(path, options) {
   try {
-    const resp = await withTimeout(fetchWithRetry(WORKER_BASE + path, {
+    let resp = await withTimeout(fetchWithRetry(WORKER_BASE + path, {
       ...options,
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': getApiKey(), ...(options?.headers || {}) },
     }), 15000, '请求');
+    // 设备密钥未被云端登记（如老版本升级后）：自动重新订阅一次并重试
+    if (resp.status === 401 && !isNativeApp()) {
+      const resubscribed = await tryResubscribe();
+      if (resubscribed) {
+        resp = await withTimeout(fetchWithRetry(WORKER_BASE + path, {
+          ...options,
+          headers: { 'Content-Type': 'application/json', 'X-Api-Key': getApiKey(), ...(options?.headers || {}) },
+        }), 15000, '请求');
+      }
+    }
     return await resp.json();
   } catch (e) {
     console.warn('[push] 上报失败:', e);
     return { ok: false, error: String(e) };
+  }
+}
+
+// 用现有订阅重新向云端登记设备密钥（订阅存在时无需再次申请权限）
+let resubscribing = false;
+async function tryResubscribe() {
+  if (resubscribing) return false;
+  resubscribing = true;
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+    const reg = await ensureServiceWorker();
+    const subscription = await reg.pushManager.getSubscription();
+    if (!subscription) return false;
+    const res = await api('/api/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ clientId: getClientId(), apiKey: getApiKey(), subscription: subscription.toJSON() }),
+    });
+    return !!res.ok;
+  } catch (e) {
+    console.warn('[push] 自动重订阅失败:', e);
+    return false;
+  } finally {
+    resubscribing = false;
   }
 }
 
