@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
-import { enablePush, scheduleReminder, cancelReminders, saveDailySchedule, cancelDailySchedule, showImmediateNotification, isNativeApp } from './push.js';
+import { enablePush, scheduleReminder, cancelReminders, saveDailySchedule, cancelDailySchedule, isNativeApp } from './push.js';
 import Calendar from './components/Calendar.jsx';
 import { DayDetailModal, UnlockModal, SettingsModal } from './components/Modals.jsx';
 
@@ -72,10 +72,23 @@ export default function App() {
   const [notificationGranted, setNotificationGranted] = useState(false);
   const [pushState, setPushState] = useState('idle'); // idle | busy | done
   const [selectedDayModal, setSelectedDayModal] = useState(null);
-  const [showEmergencyUnlockModal, setShowEmergencyUnlockModal] = useState(false);
+const [showEmergencyUnlockModal, setShowEmergencyUnlockModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showUpdateBanner, setShowUpdateBanner] = useState(false);
 
   const alertTriggeredRef = useRef(false);
+
+  // 监听 SW 新版本接管消息，提示用户刷新
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const onMessage = (e) => {
+      if (e.data && e.data.type === 'HP_UPDATE_READY') {
+        setShowUpdateBanner(true);
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage);
+  }, []);
 
   // 动态同步时间戳 (抗 iOS 后台冻结机制)
   useEffect(() => {
@@ -174,8 +187,8 @@ export default function App() {
     playAlertSound();
 
     if (isNativeApp()) {
-      // App 内：走本地通知（浏览器无 Notification API）
-      showImmediateNotification(title, body);
+      // App 内：到点提醒由 12 条本地通知计划单通道触发，
+      // 这里不再额外弹即时通知，避免同一时刻双弹
       return;
     }
 
@@ -418,8 +431,21 @@ const handleFinishedMeal = async () => {
     return `${d.getMonth() + 1}/${d.getDate()}`;
   };
 
-  return (
+return (
     <div className="max-w-md mx-auto min-h-screen bg-slate-900 text-slate-100 flex flex-col justify-between p-4 pb-safe select-none">
+
+      {/* 新版本更新提示条 */}
+      {showUpdateBanner && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-sky-600 text-white text-sm font-medium px-4 py-2.5 flex justify-between items-center shadow-lg">
+          <span>📦 新版本已就绪，刷新后生效</span>
+          <button
+            onClick={() => window.location.reload()}
+            className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded-lg text-xs font-bold"
+          >
+            立即刷新
+          </button>
+        </div>
+      )}
       
       {/* 头部进度与提醒 */}
       <header className="space-y-3 pt-2">

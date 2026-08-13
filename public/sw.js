@@ -1,6 +1,5 @@
 const CACHE_NAME = 'hp-pwa-v__VERSION__';
 const DIAG_URL = 'https://hp-push-worker.hp-push.workers.dev/api/diag';
-const API_TOKEN = 'hp_vctql96jxws8fk4er2ban5mi';
 
 const PRECACHE_ASSETS = [
   './',
@@ -32,6 +31,12 @@ self.addEventListener('activate', (event) => {
     }).then(() => self.clients.claim()).then(() => reportDiag('activated'))
   );
   self.clients.claim();
+  // 新版本已接管，通知打开的页面提示刷新
+  self.clients.matchAll({ type: 'window' }).then((clientList) => {
+    for (const client of clientList) {
+      client.postMessage({ type: 'HP_UPDATE_READY', version: CACHE_NAME });
+    }
+  });
 });
 
 // ===== Web Push 通知处理 =====
@@ -42,7 +47,7 @@ async function reportDiag(evt) {
     try { permission = Notification.permission; } catch (e) {}
     await fetch(DIAG_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Api-Token': API_TOKEN },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         evt,
         swTs: Date.now(),
@@ -97,6 +102,20 @@ self.addEventListener('notificationclick', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+
+  // 页面导航：网络优先（保证新版立即可见），离线回退缓存
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          const clone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          return networkResponse;
+        })
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match('./index.html')))
+    );
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {

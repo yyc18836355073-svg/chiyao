@@ -4,9 +4,9 @@ import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
 const WORKER_BASE = 'https://hp-push-worker.hp-push.workers.dev';
-const API_TOKEN = 'hp_vctql96jxws8fk4er2ban5mi';
 
 const CLIENT_ID_KEY = 'hp_push_client_id';
+const API_KEY_STORAGE = 'hp_push_api_key';
 
 // App 内本地通知 id 分段（避免冲突）
 const NOTIF_IDS = {
@@ -18,10 +18,26 @@ const NOTIF_IDS = {
 
 export const isNativeApp = () => !!Capacitor.isNativePlatform();
 
+// 设备级随机密钥：首次生成后存本地，作为访问 Worker 设备端 API 的身份凭证，
+// 不再在客户端代码中放置任何固定密钥
+function getApiKey() {
+  let key = localStorage.getItem(API_KEY_STORAGE);
+  if (!key) {
+    const arr = new Uint8Array(24);
+    crypto.getRandomValues(arr);
+    key = Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(API_KEY_STORAGE, key);
+  }
+  return key;
+}
+
+// 设备 ID：强随机，不可猜测（攻击者无法冒充他人 clientId 操作其提醒）
 function getClientId() {
   let id = localStorage.getItem(CLIENT_ID_KEY);
   if (!id) {
-    id = 'dev-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    const arr = new Uint8Array(24);
+    crypto.getRandomValues(arr);
+    id = Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
     localStorage.setItem(CLIENT_ID_KEY, id);
   }
   return id;
@@ -31,7 +47,7 @@ async function api(path, options) {
   try {
     const resp = await withTimeout(fetchWithRetry(WORKER_BASE + path, {
       ...options,
-      headers: { 'Content-Type': 'application/json', 'X-Api-Token': API_TOKEN, ...(options?.headers || {}) },
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': getApiKey(), ...(options?.headers || {}) },
     }), 15000, '请求');
     return await resp.json();
   } catch (e) {
@@ -128,9 +144,7 @@ export async function enablePush() {
     const reg = await ensureServiceWorker();
     step('sw', !!reg.active);
 
-    const keyResp = await withTimeout(fetchWithRetry(WORKER_BASE + '/api/public-key', {
-      headers: { 'X-Api-Token': API_TOKEN },
-    }, { retries: 2, ms: 8000 }), 26000, '获取公钥');
+    const keyResp = await withTimeout(fetchWithRetry(WORKER_BASE + '/api/public-key'), 26000, '获取公钥');
     const { publicKey } = await keyResp.json();
     step('publicKey', !!publicKey);
     if (!publicKey) return { ok: false, error: '获取推送公钥失败', steps };
@@ -150,7 +164,7 @@ export async function enablePush() {
 
     const res = await api('/api/subscribe', {
       method: 'POST',
-      body: JSON.stringify({ clientId: getClientId(), subscription: subscription.toJSON() }),
+      body: JSON.stringify({ clientId: getClientId(), apiKey: getApiKey(), subscription: subscription.toJSON() }),
     });
     step('upload', !!res.ok);
     return { ok: res.ok, clientId: getClientId(), steps, error: res.ok ? undefined : (res.error || '上报失败') };
@@ -271,25 +285,6 @@ export async function cancelDailySchedule() {
   }
   // ===== 浏览器模式 =====
   return api('/api/daily?clientId=' + encodeURIComponent(getClientId()), { method: 'DELETE' });
-}
-
-// App 内即时弹通知（到点提醒时用，浏览器环境由 Web Push 覆盖）
-export async function showImmediateNotification(title, body) {
-  if (isNativeApp()) {
-    try {
-      await LocalNotifications.schedule({
-        notifications: [{
-          id: NOTIF_IDS.IMMEDIATE,
-          title,
-          body,
-          extra: { kind: 'hp-immediate' },
-          schedule: { at: new Date(Date.now() + 300) },
-        }],
-      });
-    } catch (e) {
-      console.warn('[push] App 即时通知失败:', e);
-    }
-  }
 }
 
 function urlBase64ToUint8Array(base64String) {

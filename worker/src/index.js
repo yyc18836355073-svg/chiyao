@@ -14,12 +14,32 @@ export default {
       return new Response(null, { headers: cors });
     }
 
-    // 除公钥/健康检查外，所有接口需要 X-Api-Token 鉴权
-    const PUBLIC_PATHS = ['/api/public-key', '/api/health'];
-    if (!PUBLIC_PATHS.includes(url.pathname)) {
-      const token = request.headers.get('x-api-token');
-      if (!env.API_TOKEN || token !== env.API_TOKEN) {
-        return new Response(JSON.stringify({ ok: false, error: '未授权' }), { status: 401, headers: cors });
+    // 鉴权分层：
+    // - 公开端点：公钥、健康检查、设备订阅、诊断上报（客户端无密钥）
+    // - 设备端点（reminder/daily）：需 X-Api-Key，与订阅时登记的密钥比对
+    // - 管理端点（test-push、诊断读取）：需 X-Api-Token 服务端密钥（仅管理员工具使用，不进入客户端代码）
+    const PUBLIC_PATHS = ['/api/public-key', '/api/health', '/api/subscribe'];
+    const isPublic = PUBLIC_PATHS.includes(url.pathname) ||
+      (url.pathname === '/api/diag' && request.method === 'POST');
+    if (!isPublic) {
+      if (url.pathname === '/api/test-push' || (url.pathname === '/api/diag' && request.method === 'GET')) {
+        const token = request.headers.get('x-api-token');
+        if (!env.API_TOKEN || token !== env.API_TOKEN) {
+          return new Response(JSON.stringify({ ok: false, error: '未授权' }), { status: 401, headers: cors });
+        }
+      } else {
+        // 设备端点：校验 X-Api-Key（clientId 来自 body 或 query，随各分支处理）
+        const apiKey = request.headers.get('x-api-key');
+        let clientId = url.searchParams.get('clientId');
+        if (!clientId && request.method === 'POST') {
+          try {
+            const parsed = await request.clone().json();
+            clientId = parsed.clientId;
+          } catch (e) {}
+        }
+        if (!(await checkDeviceKey(env, clientId, apiKey))) {
+          return new Response(JSON.stringify({ ok: false, error: '设备密钥无效' }), { status: 401, headers: cors });
+        }
       }
     }
 
@@ -31,13 +51,17 @@ export default {
         });
       }
 
-      // 前端上报订阅信息
+      // 前端上报订阅信息（公开：注册设备并登记设备密钥）
       if (url.pathname === '/api/subscribe' && request.method === 'POST') {
         const body = await request.json();
         const subscription = body.subscription;
         const clientId = body.clientId || 'default';
+        const apiKey = body.apiKey;
         if (!subscription || !subscription.endpoint) {
           return new Response(JSON.stringify({ ok: false, error: '无效订阅' }), { status: 400, headers: cors });
+        }
+        if (typeof apiKey !== 'string' || !/^[0-9a-f]{32,}$/.test(apiKey)) {
+          return new Response(JSON.stringify({ ok: false, error: '无效设备密钥' }), { status: 400, headers: cors });
         }
 
         // 写回前重读最新快照，避免并发覆盖
@@ -47,6 +71,14 @@ export default {
         const rest2 = latest.filter((s) => s.clientId !== clientId);
         rest2.push({ clientId, subscription, updatedAt: Date.now() });
         await env.PUSH_KV.put('subscriptions', JSON.stringify(rest2));
+
+        // 登记/更新设备密钥
+        const keyRaw = await env.PUSH_KV.get('deviceKeys');
+        const keys = keyRaw ? JSON.parse(keyRaw) : [];
+        const restKeys = keys.filter((k) => k.clientId !== clientId);
+        restKeys.push({ clientId, apiKey, updatedAt: Date.now() });
+        await env.PUSH_KV.put('deviceKeys', JSON.stringify(restKeys));
+
         return new Response(JSON.stringify({ ok: true }), { headers: cors });
       }
 
@@ -336,6 +368,15 @@ async function getDailySettings(env) {
   if (!raw) return [];
   const parsed = JSON.parse(raw);
   return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+// 设备端 API 校验：X-Api-Key 必须与该 clientId 订阅时登记的密钥一致
+async function checkDeviceKey(env, clientId, apiKey) {
+  if (!clientId || !apiKey) return false;
+  const raw = await env.PUSH_KV.get('deviceKeys');
+  const keys = raw ? JSON.parse(raw) : [];
+  const rec = keys.find((k) => k.clientId === clientId);
+  return !!rec && rec.apiKey === apiKey;
 }
 
 // ===== Web Push 加密实现（RFC 8291 / aes128gcm） =====
