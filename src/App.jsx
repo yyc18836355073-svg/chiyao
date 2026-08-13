@@ -179,6 +179,10 @@ export default function App() {
       return;
     }
 
+    // 浏览器：推送已开启时不再本地弹，只靠云端 Web Push 推送，避免同一时刻双弹；
+    // 未开启推送时本地弹一次作为兜底
+    if (notificationGranted) return;
+
     if ('Notification' in window && Notification.permission === 'granted') {
       try {
         new Notification(title, {
@@ -307,6 +311,16 @@ export default function App() {
     return `${pad(mins)}:${pad(secs)}`;
   };
 
+  // 停止云端所有循环提醒(打卡/切阶段/重置时调用),失败自动重试,确保云端确认删除后才继续
+  const stopAllReminders = async () => {
+    for (let i = 0; i < 3; i++) {
+      const res = await cancelReminders();
+      if (res.ok) return true;
+      await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+    }
+    return false;
+  };
+
   const handleStartPreMeal = () => {
     if (safetyLock.isLocked) {
       alert('🔒 抗生素间隔锁定中！为确保疗效与肠道安全，两次服药需间隔10-12小时。');
@@ -330,9 +344,9 @@ export default function App() {
     });
   };
 
-  const handleFinishedMeal = () => {
-    // 进入饭后阶段，停止饭前提醒的循环推送
-    cancelReminders();
+const handleFinishedMeal = async () => {
+    // 先确认旧的饭前循环提醒已取消,再进入饭后阶段;新提醒由 effect 在 setActiveTimer 后自动上报
+    await stopAllReminders();
     const durationMins = 15;
     const targetTs = Date.now() + durationMins * 60 * 1000;
 
@@ -346,9 +360,10 @@ export default function App() {
     });
   };
 
-  const handleConfirmDoseComplete = () => {
-    // 完成打卡：停止所有循环提醒
-    cancelReminders();
+  const handleConfirmDoseComplete = async () => {
+    // 打卡完成:先确保云端循环提醒已取消,避免打卡后继续每10分钟打扰
+    const stopped = await stopAllReminders();
+    if (!stopped) alert('提示:提醒取消失败,可能继续收到循环提醒,请检查网络');
     const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     setLogs(prev => {
       const dayData = prev[currentDayNum] || { morning: false, evening: false };
@@ -369,9 +384,9 @@ export default function App() {
     setActiveTimer(null);
   };
 
-  const handleResetTimer = () => {
+  const handleResetTimer = async () => {
     if (window.confirm('确定要重置当前的服药倒计时吗？')) {
-      cancelReminders();
+      await stopAllReminders();
       setActiveTimer(null);
     }
   };
